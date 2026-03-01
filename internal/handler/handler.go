@@ -134,10 +134,15 @@ func (h *Handler) SubmitPlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if slug already exists
-	existing, _ := h.store.GetPluginBySlug(r.Context(), input.Slug)
-	if existing != nil {
-		respondError(w, http.StatusConflict, "A plugin with this slug already exists")
+	// Upsert by slug so plugin authors can publish new versions without creating new slugs.
+	if existing, err := h.store.GetPluginBySlug(r.Context(), input.Slug); err == nil && existing != nil {
+		plugin, updateErr := h.store.UpdatePlugin(r.Context(), existing.ID, &input)
+		if updateErr != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to update plugin")
+			return
+		}
+
+		respondJSON(w, http.StatusOK, plugin)
 		return
 	}
 

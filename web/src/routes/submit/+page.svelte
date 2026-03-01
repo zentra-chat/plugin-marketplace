@@ -2,72 +2,30 @@
 	import { submitPlugin, uploadBuildPackage } from '$lib/api';
 	import { goto } from '$app/navigation';
 	import { Upload, PackageCheck, Link as LinkIcon } from 'lucide-svelte';
+	import type { UploadedBuildResult } from '$lib/api';
 
-	let slug = $state('');
-	let name = $state('');
-	let description = $state('');
-	let author = $state('');
-	let version = $state('1.0.0');
-	let homepageUrl = $state('');
-	let sourceUrl = $state('');
-	let iconUrl = $state('');
-	let manifestJson = $state('{\n  "channelTypes": [],\n  "commands": [],\n  "hooks": []\n}');
-	let permissions = $state(0);
 	let packageFile = $state<File | null>(null);
 	let isUploadingPackage = $state(false);
-	let uploadSuccess = $state('');
+	let packaged = $state<UploadedBuildResult | null>(null);
 
 	let isSubmitting = $state(false);
 	let error = $state('');
 
-	// Permission bits matching the backend
-	const permOptions = [
-		{ bit: 1 << 0, label: 'Read Messages', risky: false },
-		{ bit: 1 << 1, label: 'Send Messages', risky: false },
-		{ bit: 1 << 2, label: 'Manage Messages', risky: true },
-		{ bit: 1 << 3, label: 'Read Members', risky: false },
-		{ bit: 1 << 4, label: 'Manage Members', risky: true },
-		{ bit: 1 << 5, label: 'Read Channels', risky: false },
-		{ bit: 1 << 6, label: 'Manage Channels', risky: true },
-		{ bit: 1 << 7, label: 'Custom Channel Types', risky: false },
-		{ bit: 1 << 8, label: 'Commands', risky: false },
-		{ bit: 1 << 9, label: 'Server Info', risky: false },
-		{ bit: 1 << 10, label: 'Webhooks', risky: true },
-		{ bit: 1 << 11, label: 'React to Messages', risky: false }
-	];
-
-	function togglePerm(bit: number) {
-		permissions = permissions ^ bit;
-	}
-
 	function handlePackageSelect(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
 		packageFile = input.files?.[0] || null;
-		uploadSuccess = '';
+		packaged = null;
 	}
 
 	async function uploadPackage() {
 		if (!packageFile) return;
 
 		error = '';
-		uploadSuccess = '';
+		packaged = null;
 		isUploadingPackage = true;
 
 		try {
-			const result = await uploadBuildPackage(packageFile);
-
-			slug = result.slug || slug;
-			name = result.name || name;
-			description = result.description || description;
-			author = result.author || author;
-			version = result.version || version;
-			homepageUrl = result.homepageUrl || homepageUrl;
-			sourceUrl = result.sourceUrl || sourceUrl;
-			iconUrl = result.iconUrl || iconUrl;
-			permissions = typeof result.requestedPermissions === 'number' ? result.requestedPermissions : permissions;
-
-			manifestJson = JSON.stringify(result.manifest, null, 2);
-			uploadSuccess = `Package uploaded. Frontend bundle hosted at ${result.frontendBundleUrl}`;
+			packaged = await uploadBuildPackage(packageFile);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to upload package';
 		} finally {
@@ -78,38 +36,24 @@
 	async function handleSubmit() {
 		error = '';
 
-		if (!slug || !name || !author || !version) {
-			error = 'Slug, name, author, and version are required';
-			return;
-		}
-
-		// Validate slug format
-		if (!/^[a-z0-9-]+$/.test(slug)) {
-			error = 'Slug must only contain lowercase letters, numbers, and hyphens';
-			return;
-		}
-
-		let manifest;
-		try {
-			manifest = JSON.parse(manifestJson);
-		} catch {
-			error = 'Invalid manifest JSON';
+		if (!packaged) {
+			error = 'Upload a build package first';
 			return;
 		}
 
 		isSubmitting = true;
 		try {
 			await submitPlugin({
-				slug,
-				name,
-				description,
-				author,
-				version,
-				homepageUrl: homepageUrl || undefined,
-				sourceUrl: sourceUrl || undefined,
-				iconUrl: iconUrl || undefined,
-				requestedPermissions: permissions,
-				manifest
+				slug: packaged.slug,
+				name: packaged.name,
+				description: packaged.description,
+				author: packaged.author,
+				version: packaged.version,
+				homepageUrl: packaged.homepageUrl,
+				sourceUrl: packaged.sourceUrl,
+				iconUrl: packaged.iconUrl,
+				requestedPermissions: packaged.requestedPermissions ?? 0,
+				manifest: packaged.manifest
 			});
 			goto('/');
 		} catch (err) {
@@ -126,20 +70,20 @@
 
 <div class="max-w-2xl mx-auto px-6 py-8">
 	<h1 class="text-3xl font-semibold tracking-tight mb-2">Publish Plugin</h1>
-	<p class="text-[var(--text-muted)] mb-6">Upload your packaged build and publish metadata to the marketplace.</p>
+	<p class="text-(--text-muted) mb-6">Upload a packaged build. Metadata is read directly from the package manifest.</p>
 
 	{#if error}
-		<div class="p-3 mb-4 rounded-lg bg-[var(--danger)]/10 border border-[var(--danger)]/20 text-sm text-[var(--danger)]">
+		<div class="p-3 mb-4 rounded-lg bg-(--danger)/10 border border-(--danger)/20 text-sm text-(--danger)">
 			{error}
 		</div>
 	{/if}
 
 	<div class="surface-panel rounded-xl p-4 mb-5 space-y-3">
 		<div class="flex items-center gap-2 text-sm font-medium">
-			<Upload size={16} class="text-[var(--accent)]" />
+			<Upload size={16} class="text-(--accent)" />
 			Compiled build package
 		</div>
-		<p class="text-xs text-[var(--text-muted)]">
+		<p class="text-xs text-(--text-muted)">
 			Upload a `.zip` generated by `zentra-plugin package`. This hosts all build files in the marketplace and fills `manifest.frontendBundle` for you.
 		</p>
 		<div class="flex items-center gap-2">
@@ -147,167 +91,68 @@
 				type="file"
 				accept=".zip"
 				onchange={handlePackageSelect}
-				class="flex-1 text-sm file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-[var(--bg-hover)] file:text-[var(--text)] file:cursor-pointer"
+				class="flex-1 text-sm file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-(--bg-hover) file:text-(--text) file:cursor-pointer"
 			/>
 			<button
 				type="button"
 				onclick={uploadPackage}
 				disabled={!packageFile || isUploadingPackage}
-				class="px-4 py-2 bg-[var(--accent)] text-[#03231b] font-medium rounded-lg hover:bg-[var(--accent-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+				class="px-4 py-2 bg-(--accent) text-[#03231b] font-medium rounded-lg hover:bg-(--accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 			>
 				{isUploadingPackage ? 'Uploading…' : 'Upload Build'}
 			</button>
 		</div>
-		{#if uploadSuccess}
-			<div class="text-xs rounded-lg p-2 bg-[var(--accent-muted)] text-[var(--text)] border border-[var(--border-light)] flex items-start gap-2">
-				<PackageCheck size={14} class="mt-0.5 text-[var(--accent)]" />
-				<span>{uploadSuccess}</span>
+		{#if packaged}
+			<div class="text-xs rounded-lg p-2 bg-(--accent-muted) text-(--text) border border-(--border-light) flex items-start gap-2">
+				<PackageCheck size={14} class="mt-0.5 text-(--accent)" />
+				<span>Package uploaded. Frontend bundle hosted at {packaged.frontendBundleUrl}</span>
 			</div>
 		{/if}
 	</div>
 
 	<form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="space-y-5 surface-panel rounded-xl p-5">
-		<div class="grid grid-cols-2 gap-4">
-			<div>
-				<label for="slug" class="block text-sm text-[var(--text-muted)] mb-1">Slug (unique ID)</label>
-				<input
-					id="slug"
-					type="text"
-					bind:value={slug}
-					placeholder="my-cool-plugin"
-					class="w-full px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-				/>
+		{#if packaged}
+			<div class="grid grid-cols-2 gap-4 text-sm">
+				<div>
+					<p class="text-(--text-muted)">Slug</p>
+					<p class="font-medium">{packaged.slug}</p>
+				</div>
+				<div>
+					<p class="text-(--text-muted)">Version</p>
+					<p class="font-medium">{packaged.version}</p>
+				</div>
+				<div>
+					<p class="text-(--text-muted)">Name</p>
+					<p class="font-medium">{packaged.name || 'Unnamed plugin'}</p>
+				</div>
+				<div>
+					<p class="text-(--text-muted)">Author</p>
+					<p class="font-medium">{packaged.author || 'Unknown author'}</p>
+				</div>
 			</div>
-			<div>
-				<label for="name" class="block text-sm text-[var(--text-muted)] mb-1">Display Name</label>
-				<input
-					id="name"
-					type="text"
-					bind:value={name}
-					placeholder="My Cool Plugin"
-					class="w-full px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-				/>
-			</div>
-		</div>
+			<p class="text-sm text-(--text-muted)">{packaged.description || 'No description provided in manifest.'}</p>
+		{:else}
+			<p class="text-sm text-(--text-muted)">Upload a packaged build to preview manifest metadata and publish.</p>
+		{/if}
 
-		<div>
-			<label for="description" class="block text-sm text-[var(--text-muted)] mb-1">Description</label>
-			<textarea
-				id="description"
-				bind:value={description}
-				placeholder="What does your plugin do?"
-				rows={3}
-				class="w-full px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] resize-none"
-			></textarea>
-		</div>
-
-		<div class="grid grid-cols-2 gap-4">
-			<div>
-				<label for="author" class="block text-sm text-[var(--text-muted)] mb-1">Author</label>
-				<input
-					id="author"
-					type="text"
-					bind:value={author}
-					placeholder="Your name"
-					class="w-full px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-				/>
-			</div>
-			<div>
-				<label for="version" class="block text-sm text-[var(--text-muted)] mb-1">Version</label>
-				<input
-					id="version"
-					type="text"
-					bind:value={version}
-					placeholder="1.0.0"
-					class="w-full px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-				/>
-			</div>
-		</div>
-
-		<div class="grid grid-cols-2 gap-4">
-			<div>
-				<label for="homepage" class="block text-sm text-[var(--text-muted)] mb-1">Homepage URL (optional)</label>
-				<input
-					id="homepage"
-					type="url"
-					bind:value={homepageUrl}
-					placeholder="https://..."
-					class="w-full px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-				/>
-			</div>
-			<div>
-				<label for="source" class="block text-sm text-[var(--text-muted)] mb-1">Source Code URL (optional)</label>
-				<input
-					id="source"
-					type="url"
-					bind:value={sourceUrl}
-					placeholder="https://github.com/..."
-					class="w-full px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-				/>
-			</div>
-		</div>
-
-		<div>
-			<label for="icon" class="block text-sm text-[var(--text-muted)] mb-1">Icon URL (optional)</label>
-			<input
-				id="icon"
-				type="url"
-				bind:value={iconUrl}
-				placeholder="https://..."
-				class="w-full px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-			/>
-		</div>
-
-		<!-- Permissions -->
-		<div>
-			<p class="text-sm text-[var(--text-muted)] mb-2">Required Permissions</p>
-			<div class="grid grid-cols-2 gap-2">
-				{#each permOptions as perm}
-					<label class="flex items-center gap-2 p-2 rounded-lg hover:bg-[var(--bg-hover)] cursor-pointer text-sm {perm.risky ? 'text-[var(--warning)]' : 'text-[var(--text)]'}">
-						<input
-							type="checkbox"
-							checked={(permissions & perm.bit) !== 0}
-							onchange={() => togglePerm(perm.bit)}
-							class="rounded border-[var(--border)]"
-						/>
-						{perm.label}
-						{#if perm.risky}
-							<span class="text-[10px] text-[var(--warning)]">(elevated)</span>
-						{/if}
-					</label>
-				{/each}
-			</div>
-		</div>
-
-		<!-- Manifest -->
-		<div>
-			<label for="manifest" class="block text-sm text-[var(--text-muted)] mb-1">Plugin Manifest (JSON)</label>
-			<textarea
-				id="manifest"
-				bind:value={manifestJson}
-				rows={6}
-				class="w-full px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg text-[var(--text)] font-mono text-sm focus:outline-none focus:border-[var(--accent)] resize-none"
-			></textarea>
-		</div>
-
-		<div class="flex justify-end gap-3 pt-2 border-t border-[var(--border)]">
+		<div class="flex justify-end gap-3 pt-2 border-t border-(--border)">
 			<a
 				href="/"
-				class="px-4 py-2 text-sm text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
+				class="px-4 py-2 text-sm text-(--text-muted) hover:text-(--text) no-underline"
 			>
 				Cancel
 			</a>
 			<button
 				type="submit"
-				disabled={isSubmitting}
-				class="px-5 py-2 bg-[var(--accent)] text-[#03231b] rounded-lg hover:bg-[var(--accent-hover)] transition-colors font-medium text-sm disabled:opacity-50"
+				disabled={isSubmitting || !packaged}
+				class="px-5 py-2 bg-(--accent) text-[#03231b] rounded-lg hover:bg-(--accent-hover) transition-colors font-medium text-sm disabled:opacity-50"
 			>
-				{isSubmitting ? 'Submitting...' : 'Submit Plugin'}
+				{isSubmitting ? 'Publishing...' : 'Publish Plugin'}
 			</button>
 		</div>
 	</form>
 
-	<div class="mt-5 text-xs text-[var(--text-muted)] flex items-center gap-1.5">
+	<div class="mt-5 text-xs text-(--text-muted) flex items-center gap-1.5">
 		<LinkIcon size={13} />
 		Bundle URLs are hosted under `/builds/{'{slug}'}/{'{version}'}/...` after upload.
 	</div>
