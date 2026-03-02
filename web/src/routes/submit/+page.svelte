@@ -1,12 +1,28 @@
 <script lang="ts">
 	import { submitPlugin, uploadBuildPackage } from '$lib/api';
 	import { goto } from '$app/navigation';
-	import { Upload, PackageCheck, Link as LinkIcon } from 'lucide-svelte';
+	import { Upload, PackageCheck, Link as LinkIcon, Shield, ShieldAlert } from 'lucide-svelte';
 	import type { UploadedBuildResult } from '$lib/api';
+
+	const permissions = [
+		{ bit: 1 << 0, label: 'Read Messages', risky: false },
+		{ bit: 1 << 1, label: 'Send Messages', risky: false },
+		{ bit: 1 << 2, label: 'Manage Messages', risky: true },
+		{ bit: 1 << 3, label: 'Read Members', risky: false },
+		{ bit: 1 << 4, label: 'Manage Members', risky: true },
+		{ bit: 1 << 5, label: 'Read Channels', risky: false },
+		{ bit: 1 << 6, label: 'Manage Channels', risky: true },
+		{ bit: 1 << 7, label: 'Add Channel Types', risky: false },
+		{ bit: 1 << 8, label: 'Add Commands', risky: false },
+		{ bit: 1 << 9, label: 'Server Info', risky: false },
+		{ bit: 1 << 10, label: 'Webhooks', risky: true },
+		{ bit: 1 << 11, label: 'React to Messages', risky: false }
+	];
 
 	let packageFile = $state<File | null>(null);
 	let isUploadingPackage = $state(false);
 	let packaged = $state<UploadedBuildResult | null>(null);
+	let requestedPermissionsOverride = $state(0);
 
 	let isSubmitting = $state(false);
 	let error = $state('');
@@ -15,6 +31,7 @@
 		const input = event.currentTarget as HTMLInputElement;
 		packageFile = input.files?.[0] || null;
 		packaged = null;
+		requestedPermissionsOverride = 0;
 	}
 
 	async function uploadPackage() {
@@ -26,11 +43,16 @@
 
 		try {
 			packaged = await uploadBuildPackage(packageFile);
+			requestedPermissionsOverride = packaged.requestedPermissions ?? 0;
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to upload package';
 		} finally {
 			isUploadingPackage = false;
 		}
+	}
+
+	function togglePermission(bit: number) {
+		requestedPermissionsOverride = requestedPermissionsOverride ^ bit;
 	}
 
 	async function handleSubmit() {
@@ -52,7 +74,7 @@
 				homepageUrl: packaged.homepageUrl,
 				sourceUrl: packaged.sourceUrl,
 				iconUrl: packaged.iconUrl,
-				requestedPermissions: packaged.requestedPermissions ?? 0,
+				requestedPermissions: requestedPermissionsOverride,
 				manifest: packaged.manifest
 			});
 			goto('/');
@@ -131,6 +153,29 @@
 				</div>
 			</div>
 			<p class="text-sm text-(--text-muted)">{packaged.description || 'No description provided in manifest.'}</p>
+
+			<div class="mt-4 rounded-lg border border-(--border) p-3 bg-(--bg-soft)">
+				<p class="text-sm font-medium mb-2">Requested permissions</p>
+				<p class="text-xs text-(--text-muted) mb-3">Pick what this plugin can request during community installation.</p>
+				<div class="grid gap-2">
+					{#each permissions as permission}
+						<label class="flex items-center gap-2 text-sm">
+							<input
+								type="checkbox"
+								checked={(requestedPermissionsOverride & permission.bit) !== 0}
+								onchange={() => togglePermission(permission.bit)}
+								class="rounded border-(--border)"
+							/>
+							{#if permission.risky}
+								<ShieldAlert size={14} class="text-yellow-400" />
+							{:else}
+								<Shield size={14} class="text-green-400" />
+							{/if}
+							<span>{permission.label}</span>
+						</label>
+					{/each}
+				</div>
+			</div>
 		{:else}
 			<p class="text-sm text-(--text-muted)">Upload a packaged build to preview manifest metadata and publish.</p>
 		{/if}

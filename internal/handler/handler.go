@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -212,7 +213,7 @@ type uploadedManifest struct {
 	HomepageURL string          `json:"homepageUrl,omitempty"`
 	SourceURL   string          `json:"sourceUrl,omitempty"`
 	IconURL     string          `json:"iconUrl,omitempty"`
-	Permissions int             `json:"requestedPermissions,omitempty"`
+	Permissions json.RawMessage `json:"requestedPermissions,omitempty"`
 	Manifest    json.RawMessage `json:"manifest,omitempty"`
 }
 
@@ -226,11 +227,96 @@ type uploadedPluginManifest struct {
 	HomepageURL          string   `json:"homepageUrl,omitempty"`
 	SourceURL            string   `json:"sourceUrl,omitempty"`
 	IconURL              string   `json:"iconUrl,omitempty"`
+	Icon                 string   `json:"icon,omitempty"`
 	ChannelTypes         []string `json:"channelTypes,omitempty"`
 	Commands             []string `json:"commands,omitempty"`
 	Triggers             []string `json:"triggers,omitempty"`
 	Hooks                []string `json:"hooks,omitempty"`
 	FrontendBundle       string   `json:"frontendBundle,omitempty"`
+}
+
+var permissionByName = map[string]int{
+	"readmessages":    1 << 0,
+	"sendmessages":    1 << 1,
+	"managemessages":  1 << 2,
+	"readmembers":     1 << 3,
+	"managemembers":   1 << 4,
+	"readchannels":    1 << 5,
+	"managechannels":  1 << 6,
+	"addchanneltypes": 1 << 7,
+	"addcommands":     1 << 8,
+	"serverinfo":      1 << 9,
+	"webhooks":        1 << 10,
+	"reacttomessages": 1 << 11,
+
+	// snake_case aliases
+	"read_messages":     1 << 0,
+	"send_messages":     1 << 1,
+	"manage_messages":   1 << 2,
+	"read_members":      1 << 3,
+	"manage_members":    1 << 4,
+	"read_channels":     1 << 5,
+	"manage_channels":   1 << 6,
+	"add_channel_types": 1 << 7,
+	"add_commands":      1 << 8,
+	"server_info":       1 << 9,
+	"react_to_messages": 1 << 11,
+}
+
+func parseRequestedPermissions(raw json.RawMessage) (int, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+
+	var asInt int
+	if err := json.Unmarshal(raw, &asInt); err == nil {
+		if asInt < 0 {
+			return 0, fmt.Errorf("requestedPermissions cannot be negative")
+		}
+		return asInt, nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		asString = strings.TrimSpace(asString)
+		if asString == "" {
+			return 0, nil
+		}
+		parsed, err := strconv.Atoi(asString)
+		if err != nil || parsed < 0 {
+			return 0, fmt.Errorf("requestedPermissions string must be a non-negative integer")
+		}
+		return parsed, nil
+	}
+
+	var asNames []string
+	if err := json.Unmarshal(raw, &asNames); err == nil {
+		bitmask := 0
+		for _, name := range asNames {
+			normalized := strings.ToLower(strings.TrimSpace(name))
+			perm, ok := permissionByName[normalized]
+			if !ok {
+				return 0, fmt.Errorf("unknown permission name %q", name)
+			}
+			bitmask |= perm
+		}
+		return bitmask, nil
+	}
+
+	return 0, fmt.Errorf("requestedPermissions must be a number, numeric string, or string[]")
+}
+
+func resolvePackagedAssetURL(baseURL, slug, version, rawPath string) string {
+	assetPath := strings.TrimSpace(rawPath)
+	assetPath = strings.TrimPrefix(assetPath, "./")
+	assetPath = strings.TrimPrefix(assetPath, "/")
+	if assetPath == "" {
+		return ""
+	}
+	if strings.HasPrefix(assetPath, "http://") || strings.HasPrefix(assetPath, "https://") {
+		return assetPath
+	}
+	return fmt.Sprintf("%s/builds/%s/%s/%s", baseURL, slug, version, assetPath)
 }
 
 func sanitizePathPart(v string) string {
@@ -255,9 +341,52 @@ func sanitizePathPart(v string) string {
 }
 
 func parseManifestContent(content []byte) (*uploadedPluginManifest, error) {
-	manifest := &uploadedPluginManifest{}
-	if err := json.Unmarshal(content, manifest); err == nil && manifest.Slug != "" {
-		return manifest, nil
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(content, &raw); err != nil {
+		return nil, err
+	}
+
+	requestedPermissions, err := parseRequestedPermissions(raw["requestedPermissions"])
+	if err != nil {
+		return nil, err
+	}
+
+	type uploadedPluginManifestPayload struct {
+		Slug           string   `json:"slug"`
+		Name           string   `json:"name"`
+		Version        string   `json:"version"`
+		Description    string   `json:"description"`
+		Author         string   `json:"author"`
+		HomepageURL    string   `json:"homepageUrl,omitempty"`
+		SourceURL      string   `json:"sourceUrl,omitempty"`
+		IconURL        string   `json:"iconUrl,omitempty"`
+		Icon           string   `json:"icon,omitempty"`
+		ChannelTypes   []string `json:"channelTypes,omitempty"`
+		Commands       []string `json:"commands,omitempty"`
+		Triggers       []string `json:"triggers,omitempty"`
+		Hooks          []string `json:"hooks,omitempty"`
+		FrontendBundle string   `json:"frontendBundle,omitempty"`
+	}
+
+	payload := &uploadedPluginManifestPayload{}
+	if err := json.Unmarshal(content, payload); err == nil && payload.Slug != "" {
+		return &uploadedPluginManifest{
+			Slug:                 payload.Slug,
+			Name:                 payload.Name,
+			Version:              payload.Version,
+			Description:          payload.Description,
+			Author:               payload.Author,
+			RequestedPermissions: requestedPermissions,
+			HomepageURL:          payload.HomepageURL,
+			SourceURL:            payload.SourceURL,
+			IconURL:              payload.IconURL,
+			Icon:                 payload.Icon,
+			ChannelTypes:         payload.ChannelTypes,
+			Commands:             payload.Commands,
+			Triggers:             payload.Triggers,
+			Hooks:                payload.Hooks,
+			FrontendBundle:       payload.FrontendBundle,
+		}, nil
 	}
 
 	wrapped := &uploadedManifest{}
@@ -274,12 +403,25 @@ func parseManifestContent(content []byte) (*uploadedPluginManifest, error) {
 		HomepageURL:          wrapped.HomepageURL,
 		SourceURL:            wrapped.SourceURL,
 		IconURL:              wrapped.IconURL,
-		RequestedPermissions: wrapped.Permissions,
+		RequestedPermissions: requestedPermissions,
+	}
+	if parsed.RequestedPermissions == 0 {
+		if wrappedPermissions, err := parseRequestedPermissions(wrapped.Permissions); err == nil {
+			parsed.RequestedPermissions = wrappedPermissions
+		}
 	}
 
 	if len(wrapped.Manifest) > 0 {
 		var embedded uploadedPluginManifest
 		if err := json.Unmarshal(wrapped.Manifest, &embedded); err == nil {
+			if parsed.RequestedPermissions == 0 {
+				var embeddedRaw map[string]json.RawMessage
+				if err := json.Unmarshal(wrapped.Manifest, &embeddedRaw); err == nil {
+					if embeddedPermissions, err := parseRequestedPermissions(embeddedRaw["requestedPermissions"]); err == nil {
+						parsed.RequestedPermissions = embeddedPermissions
+					}
+				}
+			}
 			if embedded.ChannelTypes != nil {
 				parsed.ChannelTypes = embedded.ChannelTypes
 			}
@@ -294,6 +436,12 @@ func parseManifestContent(content []byte) (*uploadedPluginManifest, error) {
 			}
 			if embedded.FrontendBundle != "" {
 				parsed.FrontendBundle = embedded.FrontendBundle
+			}
+			if embedded.Icon != "" {
+				parsed.Icon = embedded.Icon
+			}
+			if embedded.IconURL != "" {
+				parsed.IconURL = embedded.IconURL
 			}
 		}
 	}
@@ -350,26 +498,34 @@ func (h *Handler) UploadBuildPackage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var manifest *uploadedPluginManifest
+	var manifestParseErr error
 	manifestCandidates := []string{"manifest.json", "plugin.json", "zentra-plugin.json"}
 
 	for _, candidate := range manifestCandidates {
 		for _, f := range zipReader.File {
-			if strings.EqualFold(strings.TrimPrefix(filepath.ToSlash(f.Name), "./"), candidate) {
-				reader, openErr := f.Open()
-				if openErr != nil {
-					continue
-				}
-				content, readErr := io.ReadAll(reader)
-				reader.Close()
-				if readErr != nil {
-					continue
-				}
-				parsed, parseErr := parseManifestContent(content)
-				if parseErr == nil {
-					manifest = parsed
-					break
-				}
+			name := strings.TrimPrefix(filepath.ToSlash(f.Name), "./")
+			base := strings.ToLower(filepath.Base(name))
+			if base != strings.ToLower(candidate) {
+				continue
 			}
+
+			reader, openErr := f.Open()
+			if openErr != nil {
+				continue
+			}
+			content, readErr := io.ReadAll(reader)
+			reader.Close()
+			if readErr != nil {
+				continue
+			}
+
+			parsed, parseErr := parseManifestContent(content)
+			if parseErr == nil {
+				manifest = parsed
+				break
+			}
+
+			manifestParseErr = parseErr
 		}
 		if manifest != nil {
 			break
@@ -377,6 +533,10 @@ func (h *Handler) UploadBuildPackage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if manifest == nil || manifest.Slug == "" || manifest.Version == "" {
+		if manifestParseErr != nil {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("Package manifest could not be parsed: %v", manifestParseErr))
+			return
+		}
 		respondError(w, http.StatusBadRequest, "Package must contain a manifest with slug and version")
 		return
 	}
@@ -464,6 +624,12 @@ func (h *Handler) UploadBuildPackage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bundleURL := fmt.Sprintf("%s/builds/%s/%s/%s", h.resolveBaseURL(r), slug, version, entry)
+	iconURL := manifest.IconURL
+	if iconURL == "" {
+		iconURL = resolvePackagedAssetURL(h.resolveBaseURL(r), slug, version, manifest.Icon)
+	} else {
+		iconURL = resolvePackagedAssetURL(h.resolveBaseURL(r), slug, version, iconURL)
+	}
 
 	manifestResponse := map[string]any{
 		"channelTypes":   manifest.ChannelTypes,
@@ -471,6 +637,8 @@ func (h *Handler) UploadBuildPackage(w http.ResponseWriter, r *http.Request) {
 		"triggers":       manifest.Triggers,
 		"hooks":          manifest.Hooks,
 		"frontendBundle": bundleURL,
+		"icon":           manifest.Icon,
+		"iconUrl":        iconURL,
 	}
 
 	respondJSON(w, http.StatusCreated, map[string]any{
@@ -481,7 +649,7 @@ func (h *Handler) UploadBuildPackage(w http.ResponseWriter, r *http.Request) {
 		"version":              manifest.Version,
 		"homepageUrl":          manifest.HomepageURL,
 		"sourceUrl":            manifest.SourceURL,
-		"iconUrl":              manifest.IconURL,
+		"iconUrl":              iconURL,
 		"requestedPermissions": manifest.RequestedPermissions,
 		"manifest":             manifestResponse,
 		"buildBaseUrl":         fmt.Sprintf("%s/builds/%s/%s/", h.resolveBaseURL(r), slug, version),
